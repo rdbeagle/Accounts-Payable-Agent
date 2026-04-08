@@ -1,0 +1,9 @@
+anthropic
+streamlit
+pandas
+xlrd==1.2.0
+openpyxl
+pdfplumber
+imapclient
+email
+python-dotenv
