@@ -1,14 +1,12 @@
 """
 Agent 4: Filer & Notifier
 - Saves attachment files into organized local folder structure
-- Sends alert emails for duplicates, vendor mismatches, or invoice issues
+- Sends alert emails via Outlook COM (orders@logisticconsultants.com)
+  No SMTP credentials needed — uses the Outlook account already open.
 """
 
 import os
 import shutil
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
@@ -16,35 +14,25 @@ from dotenv import load_dotenv
 load_dotenv()
 
 STORAGE_ROOT  = os.getenv("STORAGE_ROOT", "./data")
-ALERT_EMAIL   = os.getenv("ALERT_EMAIL", "")
-SMTP_HOST     = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT     = int(os.getenv("SMTP_PORT", 587))
-SMTP_USER     = os.getenv("SMTP_USER", "")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+ALERT_EMAIL   = os.getenv("ALERT_EMAIL", "orders@logisticconsultants.com")
+OUTLOOK_INBOX = os.getenv("OUTLOOK_INBOX", "orders@logisticconsultants.com")
 
+# ── Supervisor contact map ────────────────────────────────────────────────────
+# Alerts go TO the supervisor who wrote the PO, CC to Donna.
+# Update these addresses if they ever change.
+SUPERVISOR_EMAILS = {
+    "BK": os.getenv("EMAIL_BLAKE", "blakek@integrityllctuc.com"),
+    "AN": os.getenv("EMAIL_ADAM",  "adamn@integrityllctuc.com"),
+}
+DONNA_EMAIL = os.getenv("EMAIL_DONNA", "donnam@logisticconsultants.com")
 
-# ── Folder layout ─────────────────────────────────────────────────────────────
-# data/
-#   processed/
-#     YYYYMM/
-#       POs/
-#         {po_number}_{filename}
-#       Invoices/
-#         {filename}
-#   flagged/
-#     {po_number}_{filename}
-#   archive/
-#     inbox copies (untouched originals)
 
 def _month_folder() -> str:
     return datetime.now().strftime("%Y%m")
 
 
 def file_po(validated_po: dict) -> str:
-    """
-    Move/copy the PO file into the appropriate local folder.
-    Returns the destination path.
-    """
+    """Move/copy the PO file into the appropriate local folder."""
     src = validated_po.get("filepath", "")
     if not src or not Path(src).exists():
         print(f"[Filer] Source file not found: {src}")
@@ -62,7 +50,6 @@ def file_po(validated_po: dict) -> str:
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{po_number}_{filename}"
 
-    # Avoid overwriting: append counter if file already exists
     counter = 1
     while dest.exists():
         stem = f"{po_number}_{Path(filename).stem}_{counter}"
@@ -102,49 +89,61 @@ def file_invoice(validated_invoice: dict) -> str:
     return str(dest)
 
 
-def send_alert(subject: str, body: str, to: str | None = None) -> bool:
+def send_alert(subject: str, body: str, to: str | None = None, cc: str | None = None) -> bool:
     """
-    Send an alert email via SMTP.
+    Send an alert email via Outlook COM.
+    Sends from orders@logisticconsultants.com — the account already open
+    in Outlook Classic. No SMTP credentials or App Passwords needed.
     Returns True on success, False on failure.
     """
     recipient = to or ALERT_EMAIL
-    if not recipient or not SMTP_USER or not SMTP_PASSWORD:
-        print(f"[Notifier] Alert not sent (SMTP not configured): {subject}")
+    if not recipient:
+        print(f"[Notifier] Alert not sent (no recipient configured): {subject}")
         return False
 
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"]    = SMTP_USER
-        msg["To"]      = recipient
+        import win32com.client
+        outlook = win32com.client.Dispatch("Outlook.Application")
 
-        html_body = f"""
-<html><body>
+        mail          = outlook.CreateItem(0)   # 0 = olMailItem
+        mail.Subject  = subject
+        mail.Body     = body
+        mail.HTMLBody = f"""<html><body>
 <p style="font-family:Arial;font-size:14px;">
 <strong>PO Automation Alert</strong><br><br>
 {body.replace(chr(10), '<br>')}
 </p>
 </body></html>"""
+        mail.To = recipient
+        if cc:
+            mail.CC = cc
 
-        msg.attach(MIMEText(body, "plain"))
-        msg.attach(MIMEText(html_body, "html"))
+        # Send from the orders account specifically
+        ns = outlook.GetNamespace("MAPI")
+        for account in ns.Accounts:
+            try:
+                if OUTLOOK_INBOX.lower() in account.SmtpAddress.lower():
+                    mail._oleobj_.Invoke(*(64209, 0, 8, 0, account))
+                    break
+            except Exception:
+                continue
 
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.sendmail(SMTP_USER, recipient, msg.as_string())
-
-        print(f"[Notifier] Alert sent to {recipient}: {subject}")
+        mail.Send()
+        cc_note = f", CC: {cc}" if cc else ""
+        print(f"[Notifier] Alert sent to {recipient}{cc_note}: {subject}")
         return True
 
     except Exception as e:
-        print(f"[Notifier] Failed to send alert: {e}")
+        print(f"[Notifier] Failed to send alert via Outlook: {e}")
         return False
 
 
 def notify_if_flagged(validated_doc: dict, email_meta: dict):
     """
     Send an alert email if the document has any flags.
+    Routes TO the supervisor who wrote the PO (BK=Blake, AN=Adam).
+    Donna is always CC'd.
+    Falls back to ALERT_EMAIL if supervisor can't be determined.
     """
     flags  = validated_doc.get("validation_flags", [])
     status = validated_doc.get("validation_status", "CLEAN")
@@ -152,26 +151,32 @@ def notify_if_flagged(validated_doc: dict, email_meta: dict):
     if not flags or status == "CLEAN":
         return
 
-    doc_type  = validated_doc.get("file_type", "Document")
-    po_number = validated_doc.get("po_number", "N/A")
-    sender    = email_meta.get("sender", "Unknown")
-    subject_  = email_meta.get("subject", "")
-    filename  = Path(validated_doc.get("filepath", "")).name
+    doc_type   = validated_doc.get("file_type", "Document")
+    po_number  = validated_doc.get("po_number", "N/A")
+    supervisor = (validated_doc.get("supervisor") or "").upper()
+    sender     = email_meta.get("sender", "Unknown")
+    subject_   = email_meta.get("subject", "")
+    filename   = Path(validated_doc.get("filepath", "")).name
+
+    # Determine recipient based on supervisor code
+    to_address = SUPERVISOR_EMAILS.get(supervisor, ALERT_EMAIL)
+    cc_address = DONNA_EMAIL
 
     flag_lines = "\n".join(f"  • {f}" for f in flags)
 
-    subject = f"[PO Alert] {status} — {po_number} from {sender}"
-    body = f"""A {doc_type} was received that requires attention.
+    subject = f"[PO Alert] {status} — {po_number}"
+    body = f"""A {doc_type} was received that requires your attention.
 
-PO Number : {po_number}
-File      : {filename}
-Received  : {email_meta.get('received_at', '')}
-From      : {sender}
-Subject   : {subject_}
+PO Number  : {po_number}
+Supervisor : {supervisor if supervisor else 'Unknown'}
+File       : {filename}
+Received   : {email_meta.get('received_at', '')}
+From       : {sender}
+Subject    : {subject_}
 
 Issues detected:
 {flag_lines}
 
-Please review the file in the 'flagged' folder.
+Please review the file in the 'flagged' folder and correct before resubmitting.
 """
-    send_alert(subject, body)
+    send_alert(subject, body, to=to_address, cc=cc_address)

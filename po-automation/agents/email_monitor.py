@@ -8,6 +8,12 @@ Attachments are saved to:
 
 All emails with supported attachments are downloaded and organized by vendor.
 Inventory/report files (EOM, pricing sheets, etc.) go to the Inventory folder.
+
+Vendor detection priority:
+  1. Exact sender address (J&J Sand uses personal Gmail)
+  2. Sender domain — checked before To: so direct-send invoices route correctly
+  3. To: address domains — catches POs where vendor reps are CC'd
+  4. 'Other' if nothing matches
 """
 
 import os
@@ -64,26 +70,32 @@ def _is_inventory_file(filename: str) -> bool:
 def _detect_vendor(to_addresses: list[str], sender: str) -> str:
     """
     Determine vendor folder name.
-    Priority: exact sender address → To: domains → sender domain → Other
+    Priority:
+    1. Exact sender address (e.g. J&J Sand uses personal Gmail)
+    2. Sender domain — checked BEFORE To: so direct-send invoices
+       (billtrust, sherwin, bldr, etc.) route correctly instead of
+       falling through to Internal via the gmail.com catch-all
+    3. To: address domains — catches POs where vendor reps are CC'd
+    4. 'Other' if nothing matches
     """
     sender_lower = sender.lower()
 
-    # 1. Exact sender address (e.g. J&J Sand uses personal Gmail)
+    # 1. Exact sender address matches
     if "jjsandtucson@gmail.com" in sender_lower:
         return "JJ-Sand"
 
-    # 2. To: address domains
+    # 2. Sender domain (catches direct-send invoices)
+    sender_domain = sender_lower.split("@")[-1] if "@" in sender_lower else ""
+    for vendor_domain, vendor_name in DOMAIN_TO_VENDOR.items():
+        if vendor_domain in sender_domain:
+            return vendor_name
+
+    # 3. To: address domains (catches POs CC'd to vendor reps)
     for addr in to_addresses:
         domain = addr.split("@")[-1].lower() if "@" in addr else ""
         for vendor_domain, vendor_name in DOMAIN_TO_VENDOR.items():
             if vendor_domain in domain:
                 return vendor_name
-
-    # 3. Sender domain fallback
-    sender_domain = sender_lower.split("@")[-1] if "@" in sender_lower else ""
-    for vendor_domain, vendor_name in DOMAIN_TO_VENDOR.items():
-        if vendor_domain in sender_domain:
-            return vendor_name
 
     return "Other"
 
@@ -184,8 +196,8 @@ def fetch_new_emails(mark_seen: bool = True) -> list[dict]:
             uid          = str(message.EntryID)
             to_addresses = _extract_to_addresses(message)
 
-            vendor    = _detect_vendor(to_addresses, sender)
-            save_dir  = _vendor_folder(vendor)
+            vendor   = _detect_vendor(to_addresses, sender)
+            save_dir = _vendor_folder(vendor)
 
             attachments = []
             for i in range(1, message.Attachments.Count + 1):
