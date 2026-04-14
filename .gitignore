@@ -7,3 +7,5 @@ __pycache__/
 *.xlsm
 *.pdf
 workflow-automation/
+
+.venv/
