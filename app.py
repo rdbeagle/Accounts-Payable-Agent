@@ -362,11 +362,11 @@ mismatches = int(df["status"].str.contains("MISMATCH",  na=False).sum()) if "sta
 
 cols = st.columns(5)
 for col, val, lbl, cls in [
-    (cols[0], total,      "Total:",         ""),
+    (cols[0], total,      "Total",         ""),
     (cols[1], clean,      "Clean",             "kpi-clean"),
     (cols[2], flagged,    "Flagged",           "kpi-flag"),
     (cols[3], dupes,      "Dupes",    "kpi-dup"),
-    (cols[4], mismatches, "Vendor Error", "kpi-mis"),
+    (cols[4], mismatches, "Mismatch", "kpi-mis"),
 ]:
     col.markdown(f"""
     <div class="kpi-wrap {cls}">
