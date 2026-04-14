@@ -1,156 +1,281 @@
 """
-Agent 1: Email Monitor
-Connects to the shared inbox via IMAP, fetches unread emails that have
-attachments, saves attachments locally, and returns structured metadata.
+Agent 1: Email Monitor (Outlook COM version)
+Reads directly from Outlook Classic on this machine — no IMAP credentials needed.
+Requires: pywin32, Outlook installed and open with the orders inbox loaded.
+
+Attachments are saved to:
+  data/inbox/YYYYMM/{VendorName}/{timestamp}_{filename}
+
+All emails with supported attachments are downloaded and organized by vendor.
+Vendor is determined by the To: address domains or sender domain.
 """
 
-import imaplib
-import email
 import os
 import re
-from email.header import decode_header
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
 
-IMAP_HOST     = os.getenv("IMAP_HOST", "mail.logisticconsultants.com")
-IMAP_PORT     = int(os.getenv("IMAP_PORT", 993))
-IMAP_USER     = os.getenv("IMAP_USER", "")
-IMAP_PASSWORD = os.getenv("IMAP_PASSWORD", "")
-IMAP_MAILBOX  = os.getenv("IMAP_MAILBOX", "INBOX")
-STORAGE_ROOT  = os.getenv("STORAGE_ROOT", "./data")
-
+_SCRIPT_DIR  = Path(__file__).resolve().parent.parent
+STORAGE_ROOT = os.getenv("STORAGE_ROOT", str(_SCRIPT_DIR / "data"))
 SUPPORTED_EXTENSIONS = {".xls", ".xlsx", ".xlsm", ".pdf"}
+TARGET_INBOX = os.getenv("OUTLOOK_INBOX", None)
 
-
-def _decode_str(value: str | bytes) -> str:
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return value or ""
+# ── Vendor identification ─────────────────────────────────────────────────────
+# Maps email domains to folder names.
+# Checked against both To: addresses and the sender's domain.
+DOMAIN_TO_VENDOR = {
+    # RWC
+    "rwcsupply.com":        "RWC",
+    "rwc.org":              "RWC",
+    # L&W Supply
+    "lwsupply.com":         "LW",
+    "billtrust.com":        "LW",        # L&W AND White Cap invoices via billtrust
+    # Sherwin-Williams
+    "sherwin.com":          "Sherwin-Williams",
+    "sherwin-williams.com": "Sherwin-Williams",
+    # Builders FirstSource
+    "bldr.com":             "Builders-FirstSource",
+    # White Cap
+    "whitecap.com":         "White-Cap",
+    # FBM
+    "myfbm.com":            "FBM",
+    # Southwest Mobile Storage
+    "swmobilestorage.com":  "SW-Mobile-Storage",
+    # J&J Sand — handled by exact address check above due to gmail domain
+    # Internal / supervisors
+    "integrityllctuc.com":  "Internal",
+    "logisticconsultants.com": "Internal",
+    "txexterior.com":       "Internal",
+    "gmail.com":            "Internal",  # tsp.iws@gmail.com forwards
+    "utdallas.edu":         "Internal",  # remove after testing
+}
 
 
 def _safe_filename(name: str) -> str:
-    """Strip characters that are unsafe in file names."""
-    name = re.sub(r'[\\/*?:"<>|]', "_", name)
-    return name.strip()
+    return re.sub(r'[\\/*?:"<>|]', "_", name).strip()
 
 
-def _extract_to_addresses(msg) -> list[str]:
-    """Return all recipient email addresses from To/CC headers."""
+def _get_inbox(outlook_ns):
+    if TARGET_INBOX:
+        for store in outlook_ns.Stores:
+            try:
+                if TARGET_INBOX.lower() in store.DisplayName.lower():
+                    root = store.GetRootFolder()
+                    for folder in root.Folders:
+                        if folder.Name.lower() == "inbox":
+                            print(f"[EmailMonitor] Using inbox: {store.DisplayName} → {folder.Name} ({folder.UnReadItemCount} unread)")
+                            return folder
+            except Exception:
+                continue
+        print(f"[EmailMonitor] Warning: Could not find inbox for '{TARGET_INBOX}', falling back to default.")
+    return outlook_ns.GetDefaultFolder(6)
+
+
+def _extract_to_addresses(message) -> list[str]:
     addresses = []
-    for header in ("To", "CC"):
-        raw = msg.get(header, "")
-        if raw:
-            # Pull bare addresses out of "Name <addr>" or plain "addr" formats
-            addresses += re.findall(r"[\w.\-+]+@[\w.\-]+", raw)
-    return [a.lower() for a in addresses]
+    try:
+        for i in range(1, message.Recipients.Count + 1):
+            recipient = message.Recipients.Item(i)
+            addr = recipient.Address or ""
+            try:
+                smtp = recipient.PropertyAccessor.GetProperty(
+                    "http://schemas.microsoft.com/mapi/proptag/0x39FE001E"
+                )
+                if smtp:
+                    addr = smtp
+            except Exception:
+                pass
+            if "@" in addr:
+                addresses.append(addr.lower())
+    except Exception as e:
+        print(f"[EmailMonitor] Could not read recipients: {e}")
+    return addresses
+
+
+# ── Inventory filename patterns ───────────────────────────────────────────────
+# Files matching these patterns are inventory/report files, not PO forms.
+# They get routed to the Inventory folder regardless of sender/vendor.
+INVENTORY_PATTERNS = [
+    r"(?i)\beom\b",          # End of Month: "EOM March 2026", "BK SBR EOM 03.2026"
+    r"(?i)\binventory\b",    # any file with "inventory" in the name
+    r"(?i)\bstatement\b",    # monthly statements
+    r"(?i)pricing.effect",   # pricing sheets e.g. "RWC Pricing Effect 12.1.25"
+    r"(?i)price.quote",      # quote documents
+]
+
+
+def _is_inventory_file(filename: str) -> bool:
+    """Return True if the filename matches known inventory/report patterns."""
+    return any(re.search(pattern, filename) for pattern in INVENTORY_PATTERNS)
+    """
+    Determine vendor folder name.
+    Order of priority:
+    1. Exact sender address (handles gmail senders like J&J Sand)
+    2. To: address domains (most reliable for POs)
+    3. Sender domain (catches invoices sent directly)
+    4. 'Other' if nothing matches
+    """
+    sender_lower = sender.lower()
+
+    # ── 1. Exact sender address matches ──────────────────────────────────────
+    if "jjsandtucson@gmail.com" in sender_lower:
+        return "JJ-Sand"
+
+    # ── 2. To: address domains ────────────────────────────────────────────────
+    for addr in to_addresses:
+        domain = addr.split("@")[-1].lower() if "@" in addr else ""
+        for vendor_domain, vendor_name in DOMAIN_TO_VENDOR.items():
+            if vendor_domain in domain:
+                return vendor_name
+
+    # ── 3. Sender domain fallback ─────────────────────────────────────────────
+    sender_domain = sender_lower.split("@")[-1] if "@" in sender_lower else ""
+    for vendor_domain, vendor_name in DOMAIN_TO_VENDOR.items():
+        if vendor_domain in sender_domain:
+            return vendor_name
+
+    return "Other"
+
+
+def _vendor_folder(vendor_name: str) -> Path:
+    """
+    Return the folder path: data/inbox/YYYYMM/{VendorName}/
+    Creates the folder if it doesn't exist.
+    """
+    month  = datetime.now().strftime("%Y%m")
+    folder = Path(STORAGE_ROOT) / "inbox" / month / vendor_name
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
 
 
 def fetch_new_emails(mark_seen: bool = True) -> list[dict]:
     """
-    Connect to IMAP, fetch UNSEEN emails, and return a list of dicts:
-    {
-        uid, subject, sender, to_addresses, received_at,
-        attachments: [{ filename, filepath, extension }]
-    }
-    Only emails with at least one supported attachment are returned.
+    Connect to Outlook, fetch all unread emails with supported attachments.
+    Saves files organized by vendor and month.
+    Returns all emails — vendor filtering for PO validation happens in Agent 2.
     """
+    try:
+        import win32com.client
+    except ImportError:
+        print("[EmailMonitor] ERROR: pywin32 not installed. Run: pip install pywin32")
+        return []
+
     results = []
-    inbox_path = Path(STORAGE_ROOT) / "inbox"
-    inbox_path.mkdir(parents=True, exist_ok=True)
 
     try:
-        mail = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
-        mail.login(IMAP_USER, IMAP_PASSWORD)
-        mail.select(IMAP_MAILBOX)
+        outlook = win32com.client.Dispatch("Outlook.Application")
+        ns      = outlook.GetNamespace("MAPI")
     except Exception as e:
-        print(f"[EmailMonitor] Connection failed: {e}")
+        print(f"[EmailMonitor] Could not connect to Outlook: {e}")
+        print("  Make sure Outlook is open and signed in.")
         return []
 
     try:
-        status, data = mail.search(None, "UNSEEN")
-        if status != "OK" or not data[0]:
-            print("[EmailMonitor] No unseen emails.")
-            mail.logout()
-            return []
+        inbox = _get_inbox(ns)
+    except Exception as e:
+        print(f"[EmailMonitor] Could not access inbox: {e}")
+        return []
 
-        uid_list = data[0].split()
-        print(f"[EmailMonitor] Found {len(uid_list)} unseen email(s).")
+    messages = inbox.Items
+    messages.Sort("[ReceivedTime]", True)
 
-        for uid in uid_list:
-            status, msg_data = mail.fetch(uid, "(RFC822)")
-            if status != "OK":
+    unread_count = processed_count = 0
+
+    for message in messages:
+        try:
+            if message.UnRead is False:
                 continue
 
-            raw_email = msg_data[0][1]
-            msg = email.message_from_bytes(raw_email)
+            unread_count += 1
 
-            # Decode subject
-            subject_parts = decode_header(msg.get("Subject", ""))
-            subject = " ".join(
-                _decode_str(part) if isinstance(part, bytes) else (part or "")
-                for part, enc in subject_parts
-            )
+            if message.Attachments.Count == 0:
+                if mark_seen:
+                    message.UnRead = False
+                    message.Save()
+                continue
 
-            sender      = msg.get("From", "")
-            to_addresses = _extract_to_addresses(msg)
-            date_str    = msg.get("Date", "")
+            subject      = message.Subject or ""
+            sender       = message.SenderEmailAddress or message.SenderName or ""
+            received_at  = str(message.ReceivedTime)
+            uid          = str(message.EntryID)
+            to_addresses = _extract_to_addresses(message)
+
+            # Determine vendor for folder routing
+            vendor   = _detect_vendor(to_addresses, sender)
+            save_dir = _vendor_folder(vendor)
 
             attachments = []
-            for part in msg.walk():
-                content_disposition = part.get("Content-Disposition", "")
-                if "attachment" not in content_disposition.lower():
-                    continue
-
-                filename = part.get_filename()
-                if not filename:
-                    continue
-
-                # Decode RFC 2047 encoded filenames
-                decoded_parts = decode_header(filename)
-                filename = " ".join(
-                    _decode_str(p) if isinstance(p, bytes) else (p or "")
-                    for p, enc in decoded_parts
-                )
-                filename = _safe_filename(filename)
-                ext = Path(filename).suffix.lower()
+            for i in range(1, message.Attachments.Count + 1):
+                attachment = message.Attachments.Item(i)
+                filename   = _safe_filename(attachment.FileName or f"attachment_{i}")
+                ext        = Path(filename).suffix.lower()
 
                 if ext not in SUPPORTED_EXTENSIONS:
-                    print(f"[EmailMonitor] Skipping unsupported file: {filename}")
+                    print(f"[EmailMonitor] Skipping: {filename}")
                     continue
 
-                # Save attachment with timestamp prefix to avoid collisions
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                # Route inventory/report files to their own folder
+                if _is_inventory_file(filename):
+                    file_folder = _vendor_folder("Inventory")
+                    folder_label = "Inventory"
+                else:
+                    file_folder  = save_dir
+                    folder_label = vendor
+
+                ts        = datetime.now().strftime("%Y%m%d_%H%M%S")
                 save_name = f"{ts}_{filename}"
-                save_path = inbox_path / save_name
-                save_path.write_bytes(part.get_payload(decode=True))
+                save_path = file_folder / save_name
+
+                attachment.SaveAsFile(str(save_path))
+                print(f"[EmailMonitor] [{folder_label}] {save_name}")
 
                 attachments.append({
                     "filename":  filename,
                     "filepath":  str(save_path),
                     "extension": ext,
                 })
-                print(f"[EmailMonitor] Saved attachment: {save_name}")
 
             if not attachments:
-                continue  # skip emails with no supported attachments
+                if mark_seen:
+                    message.UnRead = False
+                    message.Save()
+                continue
 
             results.append({
-                "uid":          uid.decode(),
+                "uid":          uid,
                 "subject":      subject,
                 "sender":       sender,
                 "to_addresses": to_addresses,
-                "received_at":  date_str,
+                "received_at":  received_at,
+                "vendor":       vendor,
                 "attachments":  attachments,
             })
 
             if mark_seen:
-                mail.store(uid, "+FLAGS", "\\Seen")
+                message.UnRead = False
+                message.Save()
 
-    finally:
-        mail.logout()
+            processed_count += 1
 
-    print(f"[EmailMonitor] Returning {len(results)} email(s) with attachments.")
+        except Exception as e:
+            print(f"[EmailMonitor] Error processing message: {e}")
+            continue
+
+    print(f"[EmailMonitor] {unread_count} unread | {processed_count} with attachments saved")
     return results
+
+
+if __name__ == "__main__":
+    print("Testing Outlook connection...")
+    emails = fetch_new_emails(mark_seen=False)
+    if emails:
+        print(f"\nFound {len(emails)} email(s) with attachments:")
+        for e in emails:
+            print(f"  [{e['vendor']}] {e['subject']}")
+            print(f"    Files: {[a['filename'] for a in e['attachments']]}")
+            print()
+    else:
+        print("No unread emails with attachments found.")
