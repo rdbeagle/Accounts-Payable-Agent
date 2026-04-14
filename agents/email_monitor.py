@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-_SCRIPT_DIR  = Path(__file__).resolve().parent.parent
+_SCRIPT_DIR = Path(__file__).resolve().parent.parent
 STORAGE_ROOT = os.getenv("STORAGE_ROOT", str(_SCRIPT_DIR / "data"))
 SUPPORTED_EXTENSIONS = {".xls", ".xlsx", ".xlsm", ".pdf"}
 TARGET_INBOX = os.getenv("OUTLOOK_INBOX", None)
