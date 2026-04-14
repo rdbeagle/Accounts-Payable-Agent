@@ -289,8 +289,8 @@ with st.sidebar:
     st.markdown('<div class="red-bar"></div>', unsafe_allow_html=True)
 
     st.markdown('<div class="section-head">Automation</div>', unsafe_allow_html=True)
-    run_live = st.button("▶  RUN NOW", use_container_width=True, type="primary")
-    run_dry  = st.button("◎  DRY RUN", use_container_width=True)
+    run_live = st.button("▶  RUN NOW", width='stretch', type="primary")
+    run_dry  = st.button("◎  TEST RUN", width='stretch')
 
     if run_live:
         with st.spinner("Checking inbox and processing…"):
@@ -324,12 +324,12 @@ with st.sidebar:
         label_visibility="collapsed",
     )
     if uploaded:
-        if st.button("⬆  SUBMIT FILES", use_container_width=True):
+        if st.button("⬆  SUBMIT FILES", width='stretch'):
             n = inject_manual_files(uploaded)
             st.success(f"{n} file(s) queued. Click Run Now to process.")
 
     st.markdown('<div class="red-bar"></div>', unsafe_allow_html=True)
-    if st.button("↺  REFRESH", use_container_width=True):
+    if st.button("↺  REFRESH", width='stretch'):
         st.rerun()
     st.caption(f"Updated {datetime.now().strftime('%H:%M:%S')}")
 
@@ -431,7 +431,7 @@ display_cols = [c for c in [
 st.caption(f"{len(filtered)} of {total} records")
 st.dataframe(
     filtered[display_cols].sort_values("logged_at", ascending=False) if "logged_at" in filtered.columns else filtered[display_cols],
-    use_container_width=True,
+    width='stretch',
     hide_index=True,
 )
 
@@ -469,7 +469,7 @@ if "po_number" in filtered.columns and len(filtered) > 0:
                 items = json.loads(items_json) if isinstance(items_json, str) else []
                 if items:
                     st.markdown("**Line Items**")
-                    st.dataframe(pd.DataFrame(items), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(items), width='stretch', hide_index=True)
             except Exception:
                 pass
 
@@ -481,11 +481,11 @@ with e1:
     csv = filtered[display_cols].to_csv(index=False).encode("utf-8")
     st.download_button("⬇  EXPORT LOG (CSV)", data=csv,
         file_name=f"po_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv", use_container_width=True)
+        mime="text/csv", width='stretch')
 with e2:
     if not flagged_df.empty:
         avail = [c for c in display_cols if c in flagged_df.columns]
         fcsv  = flagged_df[avail].to_csv(index=False).encode("utf-8")
         st.download_button("⬇  EXPORT FLAGGED (CSV)", data=fcsv,
             file_name=f"po_flagged_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv", use_container_width=True)
+            mime="text/csv", width='stretch')
