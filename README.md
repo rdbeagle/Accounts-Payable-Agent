@@ -12,7 +12,6 @@ Integrity Wall Systems sends 30–60 purchase orders per week via email to vendo
 
 **This system automates the entire pipeline.**
 
----
 
 ## What It Does
 
