@@ -9,7 +9,6 @@
 
 An automated multi-agent system that monitors a shared company email inbox, processes purchase order and invoice attachments, validates for errors, and organizes files — replacing a manual review workflow that was prone to duplicate PO numbers, vendor mismatches, and missing documentation.
 
----
 
 ## Problem Statement
 
