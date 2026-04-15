@@ -1,0 +1,29 @@
+[
+  {
+    "uid": "demo_001",
+    "subject": "LH ORDER LOT 94 - DELIVERY TOMORROW",
+    "sender": "blakek@integrityllctuc.com",
+    "to_addresses": ["tucsonstucco@rwc.org", "orders@logisticconsultants.com"],
+    "received_at": "2026-04-14T09:00:00",
+    "vendor": "RWC",
+    "attachments": [{"filename": "4775BK LH LOT 94.19.xls"}]
+  },
+  {
+    "uid": "demo_002",
+    "subject": "ST ORDER LOT 41 SBP - WILLCALL",
+    "sender": "blakek@integrityllctuc.com",
+    "to_addresses": ["adrian.carino@lwsupply.com", "orders@logisticconsultants.com"],
+    "received_at": "2026-04-14T09:15:00",
+    "vendor": "LW",
+    "attachments": [{"filename": "8805BK ST SBP LOT41.44B.xls"}]
+  },
+  {
+    "uid": "demo_003",
+    "subject": "RE: LH ORDER LOT 94 - RESEND",
+    "sender": "blakek@integrityllctuc.com",
+    "to_addresses": ["tucsonstucco@rwc.org", "orders@logisticconsultants.com"],
+    "received_at": "2026-04-14T10:00:00",
+    "vendor": "RWC",
+    "attachments": [{"filename": "4775BK LH LOT 94.19.xls"}]
+  }
+]

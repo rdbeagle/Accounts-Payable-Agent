@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-STORAGE_ROOT = os.getenv("STORAGE_ROOT", "./data")
+STORAGE_ROOT = os.getenv("STORAGE_ROOT", "./po-automation/data")
 TRACKING_CSV = os.path.join(STORAGE_ROOT, "po_tracking.csv")
 
 st.set_page_config(
@@ -83,8 +83,6 @@ html, body, [class*="css"] {
     padding-bottom: 6px;
     border-bottom: 1px solid rgba(255,255,255,0.06);
 }
-
-/* Page title */
 .page-title {
     font-family: 'Bebas Neue', sans-serif;
     font-size: 2.8rem;
@@ -102,6 +100,30 @@ html, body, [class*="css"] {
     font-weight: 300;
 }
 
+/* AI Brief card */
+.ai-brief-card {
+    background: rgba(180,30,30,0.08);
+    border: 1px solid rgba(180,30,30,0.25);
+    border-left: 3px solid #E63232;
+    border-radius: 10px;
+    padding: 18px 22px;
+    margin-bottom: 20px;
+}
+.ai-brief-label {
+    font-size: 0.58rem;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    color: rgba(230,50,50,0.7);
+    font-weight: 500;
+    margin-bottom: 8px;
+}
+.ai-brief-text {
+    font-size: 0.92rem;
+    color: rgba(255,255,255,0.85);
+    line-height: 1.6;
+    font-weight: 300;
+}
+
 /* KPI cards */
 .kpi-wrap {
     background: rgba(255,255,255,0.03);
@@ -113,7 +135,7 @@ html, body, [class*="css"] {
 }
 .kpi-wrap:hover { border-color: rgba(255,255,255,0.14); }
 .kpi-n { font-family: 'Bebas Neue', sans-serif; font-size: 3rem; line-height: 1; color: #fff; }
-.kpi-l { font-size: 0.6rem; letter-spacing: 3px; text-transform: uppercase; color: rgba(255,255,255,0.4); margin-top: 5px; }
+.kpi-l { font-size: 0.6rem; letter-spacing: 2px; text-transform: uppercase; color: rgba(255,255,255,0.55); margin-top: 5px; }
 .kpi-clean  .kpi-n { color: #4ade80; }
 .kpi-flag   .kpi-n { color: #f87171; }
 .kpi-dup    .kpi-n { color: #E63232; }
@@ -206,13 +228,11 @@ html, body, [class*="css"] {
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def excel_serial_to_date(val) -> str:
-    """Convert Excel date serial number to readable date string."""
     try:
         f = float(val)
-        if f > 1000:  # looks like a serial
-            d = date(1899, 12, 30)
+        if f > 1000:
             from datetime import timedelta
-            return (d + timedelta(days=int(f))).strftime("%m/%d/%Y")
+            return (date(1899, 12, 30) + timedelta(days=int(f))).strftime("%m/%d/%Y")
         return str(val)
     except Exception:
         return str(val) if val and str(val) != "nan" else "—"
@@ -227,11 +247,60 @@ def load_tracking() -> pd.DataFrame:
         df["flags"] = df["flags"].apply(
             lambda x: json.loads(x) if isinstance(x, str) and x.startswith("[") else []
         )
-    # Convert Excel date serials
     for col in ["order_date", "delivery_date"]:
         if col in df.columns:
             df[col] = df[col].apply(excel_serial_to_date)
     return df
+
+
+def generate_ai_brief(df: pd.DataFrame) -> str:
+    cache_key = f"ai_brief_{len(df)}"
+    if st.session_state.get("ai_brief_key") == cache_key:
+        return st.session_state.get("ai_brief", "")
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+        total      = len(df)
+        clean      = int((df["status"] == "CLEAN").sum()) if "status" in df.columns else 0
+        dupes      = int(df["status"].str.contains("DUPLICATE", na=False).sum()) if "status" in df.columns else 0
+        mismatches = int(df["status"].str.contains("MISMATCH", na=False).sum()) if "status" in df.columns else 0
+        flagged    = total - clean
+
+        flagged_df   = df[df["status"].str.contains("DUPLICATE|MISMATCH", na=False)] if "status" in df.columns else pd.DataFrame()
+        flag_details = ""
+        for _, row in flagged_df.iterrows():
+            flags     = row.get("flags", [])
+            flag_text = "; ".join(flags) if isinstance(flags, list) else str(flags)
+            flag_details += f"- PO {row.get('po_number','?')} (Supervisor {row.get('supervisor','?')}): {flag_text}\n"
+
+        prompt = f"""You are writing a brief status update for a construction supply company's purchase order inbox.
+Write 3-4 sentences in plain English. Be specific — mention PO numbers and supervisors when there are issues.
+End with the single most important action needed right now. No bullet points, no headers.
+
+Status:
+- Total POs: {total} | Clean: {clean} | Flagged: {flagged}
+- Duplicates: {dupes} | Vendor mismatches: {mismatches}
+
+Issues:
+{flag_details if flag_details else "None — all POs processed cleanly."}"""
+
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        brief = response.content[0].text.strip()
+
+    except Exception as e:
+        total = len(df)
+        clean = int((df["status"] == "CLEAN").sum()) if "status" in df.columns else 0
+        brief = f"{total} purchase orders on file — {clean} processed cleanly. AI brief unavailable: check ANTHROPIC_API_KEY in .env."
+
+    st.session_state["ai_brief"]     = brief
+    st.session_state["ai_brief_key"] = cache_key
+    return brief
 
 
 def run_automation(dry_run: bool = False):
@@ -250,8 +319,21 @@ def run_automation(dry_run: bool = False):
         return "", str(e)
 
 
+def run_demo_pipeline():
+    try:
+        result = subprocess.run(
+            ["python", "run_demo.py"],
+            capture_output=True, text=True,
+            cwd=Path(__file__).parent, timeout=180
+        )
+        return result.stdout, result.stderr
+    except subprocess.TimeoutExpired:
+        return "", "Timed out after 3 minutes."
+    except Exception as e:
+        return "", str(e)
+
+
 def inject_manual_files(uploaded_files) -> int:
-    """Save manually dropped files into the inbox for processing."""
     if not uploaded_files:
         return 0
     month    = datetime.now().strftime("%Y%m")
@@ -267,12 +349,9 @@ def inject_manual_files(uploaded_files) -> int:
 
 
 def badge(status: str) -> str:
-    if "DUPLICATE" in status:
-        return f'<span class="badge badge-dup">DUPLICATE</span>'
-    if "MISMATCH" in status:
-        return f'<span class="badge badge-mis">MISMATCH</span>'
-    if "CLEAN" in status:
-        return f'<span class="badge badge-cln">CLEAN</span>'
+    if "DUPLICATE" in status: return '<span class="badge badge-dup">DUPLICATE</span>'
+    if "MISMATCH"  in status: return '<span class="badge badge-mis">MISMATCH</span>'
+    if "CLEAN"     in status: return '<span class="badge badge-cln">CLEAN</span>'
     return f'<span class="badge badge-err">{status}</span>'
 
 
@@ -295,6 +374,8 @@ with st.sidebar:
     if run_live:
         with st.spinner("Checking inbox and processing…"):
             out, err = run_automation(dry_run=False)
+        st.session_state.pop("ai_brief", None)
+        st.session_state.pop("ai_brief_key", None)
         st.success("Run complete.")
         if out:
             with st.expander("Output log"):
@@ -304,14 +385,32 @@ with st.sidebar:
         st.rerun()
 
     if run_dry:
-        with st.spinner("Running dry run…"):
+        with st.spinner("Running test run…"):
             out, err = run_automation(dry_run=True)
-        st.info("Dry run — no files moved.")
+        st.info("Test run — no files moved.")
         if out:
             with st.expander("Output log"):
                 st.code(out, language="text")
         if err:
             st.warning(err)
+
+    st.markdown('<div class="red-bar"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-head">Demo Mode</div>', unsafe_allow_html=True)
+    st.markdown('<p style="font-size:0.8rem;color:rgba(255,255,255,0.6);margin-top:-4px;">Run pipeline against sample files — no Outlook needed.</p>', unsafe_allow_html=True)
+    run_demo = st.button("◈  RUN DEMO", width='stretch')
+
+    if run_demo:
+        with st.spinner("Running demo pipeline…"):
+            out, err = run_demo_pipeline()
+        st.session_state.pop("ai_brief", None)
+        st.session_state.pop("ai_brief_key", None)
+        st.success("Demo run complete.")
+        if out:
+            with st.expander("Output log"):
+                st.code(out, language="text")
+        if err:
+            st.warning(err)
+        st.rerun()
 
     st.markdown('<div class="red-bar"></div>', unsafe_allow_html=True)
     st.markdown('<div class="section-head">Manual Submission</div>', unsafe_allow_html=True)
@@ -330,6 +429,8 @@ with st.sidebar:
 
     st.markdown('<div class="red-bar"></div>', unsafe_allow_html=True)
     if st.button("↺  REFRESH", width='stretch'):
+        st.session_state.pop("ai_brief", None)
+        st.session_state.pop("ai_brief_key", None)
         st.rerun()
     st.caption(f"Updated {datetime.now().strftime('%H:%M:%S')}")
 
@@ -344,14 +445,24 @@ df = load_tracking()
 if df.empty:
     st.markdown("""
     <div style="text-align:center;padding:100px 0;">
-        <div style="font-family:'Bebas Neue',sans-serif;font-size:1.2rem;letter-spacing:5px;color:rgba(255,255,255,0.2);">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:1.2rem;letter-spacing:5px;color:rgba(255,255,255,0.5);">
             NO DATA YET
         </div>
-        <div style="font-size:0.7rem;letter-spacing:3px;color:rgba(255,255,255,0.12);margin-top:8px;">
+        <div style="font-size:0.7rem;letter-spacing:3px;color:rgba(255,255,255,0.3);margin-top:8px;">
             RUN AUTOMATION OR SUBMIT FILES TO BEGIN
         </div>
     </div>""", unsafe_allow_html=True)
     st.stop()
+
+# ── AI Brief ──────────────────────────────────────────────────────────────────
+with st.spinner("Generating AI brief…"):
+    brief = generate_ai_brief(df)
+
+st.markdown(f"""
+<div class="ai-brief-card">
+    <div class="ai-brief-label">&#9889; AI INBOX BRIEF</div>
+    <div class="ai-brief-text">{brief}</div>
+</div>""", unsafe_allow_html=True)
 
 # ── KPIs ──────────────────────────────────────────────────────────────────────
 total      = len(df)
@@ -362,9 +473,9 @@ mismatches = int(df["status"].str.contains("MISMATCH",  na=False).sum()) if "sta
 
 cols = st.columns(5)
 for col, val, lbl, cls in [
-    (cols[0], total,      "Total",         ""),
-    (cols[1], clean,      "Clean",             "kpi-clean"),
-    (cols[2], flagged,    "Flagged",           "kpi-flag"),
+    (cols[0], total,      "Total",    ""),
+    (cols[1], clean,      "Clean",    "kpi-clean"),
+    (cols[2], flagged,    "Flagged",  "kpi-flag"),
     (cols[3], dupes,      "Dupes",    "kpi-dup"),
     (cols[4], mismatches, "Mismatch", "kpi-mis"),
 ]:
@@ -377,7 +488,7 @@ for col, val, lbl, cls in [
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ── Flagged items ─────────────────────────────────────────────────────────────
-flagged_df = df[df["status"].str.contains("DUPLICATE|MISMATCH|PARSE_ERROR|VENDOR", na=False)] if "status" in df.columns else pd.DataFrame()
+flagged_df = df[df["status"].str.contains("DUPLICATE|MISMATCH|VENDOR", na=False)] if "status" in df.columns else pd.DataFrame()
 
 if not flagged_df.empty:
     with st.expander(f"⚠️  Flagged Items Requiring Attention  ({len(flagged_df)})", expanded=True):
@@ -431,7 +542,7 @@ display_cols = [c for c in [
 st.caption(f"{len(filtered)} of {total} records")
 st.dataframe(
     filtered[display_cols].sort_values("logged_at", ascending=False) if "logged_at" in filtered.columns else filtered[display_cols],
-    width='stretch',
+    use_container_width=True,
     hide_index=True,
 )
 
@@ -447,18 +558,18 @@ if "po_number" in filtered.columns and len(filtered) > 0:
             d1, d2, d3 = st.columns(3)
             with d1:
                 st.markdown("**PO Info**")
-                for k, v in [("Number", "po_number"), ("Type", "po_type"), ("Supervisor", "supervisor"), ("Category", "category")]:
-                    val = str(row.get(v, "")) if str(row.get(v, "")) != "nan" else "—"
+                for k, v in [("Number","po_number"),("Type","po_type"),("Supervisor","supervisor"),("Category","category")]:
+                    val = str(row.get(v,"")) if str(row.get(v,"")) != "nan" else "—"
                     st.write(f"**{k}:** {val}")
             with d2:
                 st.markdown("**Dates & Location**")
-                for k, v in [("Order Date", "order_date"), ("Delivery", "delivery_date"), ("Address", "address"), ("Lot", "lot"), ("Location", "location")]:
-                    val = str(row.get(v, "")) if str(row.get(v, "")) != "nan" else "—"
+                for k, v in [("Order Date","order_date"),("Delivery","delivery_date"),("Address","address"),("Lot","lot"),("Location","location")]:
+                    val = str(row.get(v,"")) if str(row.get(v,"")) != "nan" else "—"
                     st.write(f"**{k}:** {val}")
             with d3:
                 st.markdown("**Vendor & Status**")
-                for k, v in [("Vendor on Form", "vendor_on_form"), ("Tract", "tract"), ("Release", "release"), ("Status", "status")]:
-                    val = str(row.get(v, "")) if str(row.get(v, "")) != "nan" else "—"
+                for k, v in [("Vendor on Form","vendor_on_form"),("Tract","tract"),("Release","release"),("Status","status")]:
+                    val = str(row.get(v,"")) if str(row.get(v,"")) != "nan" else "—"
                     st.write(f"**{k}:** {val}")
                 flags = row.get("flags", [])
                 if flags:
@@ -469,7 +580,7 @@ if "po_number" in filtered.columns and len(filtered) > 0:
                 items = json.loads(items_json) if isinstance(items_json, str) else []
                 if items:
                     st.markdown("**Line Items**")
-                    st.dataframe(pd.DataFrame(items), width='stretch', hide_index=True)
+                    st.dataframe(pd.DataFrame(items), use_container_width=True, hide_index=True)
             except Exception:
                 pass
 
@@ -481,11 +592,11 @@ with e1:
     csv = filtered[display_cols].to_csv(index=False).encode("utf-8")
     st.download_button("⬇  EXPORT LOG (CSV)", data=csv,
         file_name=f"po_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv", width='stretch')
+        mime="text/csv", use_container_width=True)
 with e2:
     if not flagged_df.empty:
         avail = [c for c in display_cols if c in flagged_df.columns]
         fcsv  = flagged_df[avail].to_csv(index=False).encode("utf-8")
         st.download_button("⬇  EXPORT FLAGGED (CSV)", data=fcsv,
             file_name=f"po_flagged_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv", width='stretch')
+            mime="text/csv", use_container_width=True)

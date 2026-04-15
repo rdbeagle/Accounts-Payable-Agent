@@ -2,7 +2,7 @@
 Agent 4: Filer & Notifier
 - Saves attachment files into organized local folder structure
 - Sends alert emails via Outlook COM (orders@logisticconsultants.com)
-  No SMTP credentials needed — uses the Outlook account already open.
+- Uses Claude to write contextual, actionable alert messages
 """
 
 import os
@@ -17,9 +17,6 @@ STORAGE_ROOT  = os.getenv("STORAGE_ROOT", "./data")
 ALERT_EMAIL   = os.getenv("ALERT_EMAIL", "orders@logisticconsultants.com")
 OUTLOOK_INBOX = os.getenv("OUTLOOK_INBOX", "orders@logisticconsultants.com")
 
-# ── Supervisor contact map ────────────────────────────────────────────────────
-# Alerts go TO the supervisor who wrote the PO, CC to Donna.
-# Update these addresses if they ever change.
 SUPERVISOR_EMAILS = {
     "BK": os.getenv("EMAIL_BLAKE", "blakek@integrityllctuc.com"),
     "AN": os.getenv("EMAIL_ADAM",  "adamn@integrityllctuc.com"),
@@ -32,7 +29,6 @@ def _month_folder() -> str:
 
 
 def file_po(validated_po: dict) -> str:
-    """Move/copy the PO file into the appropriate local folder."""
     src = validated_po.get("filepath", "")
     if not src or not Path(src).exists():
         print(f"[Filer] Source file not found: {src}")
@@ -62,7 +58,6 @@ def file_po(validated_po: dict) -> str:
 
 
 def file_invoice(validated_invoice: dict) -> str:
-    """Move/copy the invoice PDF into the appropriate folder."""
     src = validated_invoice.get("filepath", "")
     if not src or not Path(src).exists():
         return ""
@@ -89,12 +84,76 @@ def file_invoice(validated_invoice: dict) -> str:
     return str(dest)
 
 
+def _generate_alert_body(validated_doc: dict, email_meta: dict, flags: list) -> str:
+    """
+    Use Claude to write a contextual, actionable alert email body.
+    Falls back to a plain template if the API call fails.
+    """
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+        doc_type   = validated_doc.get("file_type", "Document")
+        po_number  = validated_doc.get("po_number", "N/A")
+        supervisor = (validated_doc.get("supervisor") or "Unknown").upper()
+        status     = validated_doc.get("validation_status", "")
+        vendor     = validated_doc.get("vendor_on_form", "Unknown")
+        email_vendor = validated_doc.get("vendor_from_email", "Unknown")
+        filename   = Path(validated_doc.get("filepath", "")).name
+        sender     = email_meta.get("sender", "Unknown")
+        subject    = email_meta.get("subject", "")
+        flag_text  = "\n".join(f"- {f}" for f in flags)
+
+        prompt = f"""You are writing a brief alert email for a construction supply company's purchase order system.
+
+A {doc_type} was received that has issues requiring attention. Write a 3-4 sentence plain English message that:
+1. Clearly states what the problem is
+2. Explains what likely caused it
+3. States exactly what action needs to be taken to fix it
+
+Be direct and professional. Do not use bullet points. Do not include a subject line or greeting.
+
+Details:
+- PO Number: {po_number}
+- Supervisor Code: {supervisor}
+- Status: {status}
+- Vendor on Form: {vendor}
+- Email sent to vendor: {email_vendor}
+- File: {filename}
+- Email from: {sender}
+- Email subject: {subject}
+- Issues detected:
+{flag_text}
+
+Write only the email body, 3-4 sentences."""
+
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=300,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.content[0].text.strip()
+
+    except Exception as e:
+        print(f"[Notifier] Claude alert generation failed, using template: {e}")
+        # Fall back to plain template
+        flag_lines = "\n".join(f"  • {f}" for f in flags)
+        return f"""A {validated_doc.get('file_type','Document')} was received that requires attention.
+
+PO Number  : {validated_doc.get('po_number', 'N/A')}
+File       : {Path(validated_doc.get('filepath','')).name}
+From       : {email_meta.get('sender','')}
+
+Issues detected:
+{flag_lines}
+
+Please review the file in the 'flagged' folder and correct before resubmitting."""
+
+
 def send_alert(subject: str, body: str, to: str | None = None, cc: str | None = None) -> bool:
     """
     Send an alert email via Outlook COM.
-    Sends from orders@logisticconsultants.com — the account already open
-    in Outlook Classic. No SMTP credentials or App Passwords needed.
-    Returns True on success, False on failure.
+    Sends from orders@logisticconsultants.com — no SMTP credentials needed.
     """
     recipient = to or ALERT_EMAIL
     if not recipient:
@@ -105,12 +164,12 @@ def send_alert(subject: str, body: str, to: str | None = None, cc: str | None = 
         import win32com.client
         outlook = win32com.client.Dispatch("Outlook.Application")
 
-        mail          = outlook.CreateItem(0)   # 0 = olMailItem
+        mail          = outlook.CreateItem(0)
         mail.Subject  = subject
         mail.Body     = body
         mail.HTMLBody = f"""<html><body>
 <p style="font-family:Arial;font-size:14px;">
-<strong>PO Automation Alert</strong><br><br>
+<strong>PO Automation Alert — Integrity Wall Systems</strong><br><br>
 {body.replace(chr(10), '<br>')}
 </p>
 </body></html>"""
@@ -118,7 +177,6 @@ def send_alert(subject: str, body: str, to: str | None = None, cc: str | None = 
         if cc:
             mail.CC = cc
 
-        # Send from the orders account specifically
         ns = outlook.GetNamespace("MAPI")
         for account in ns.Accounts:
             try:
@@ -140,10 +198,8 @@ def send_alert(subject: str, body: str, to: str | None = None, cc: str | None = 
 
 def notify_if_flagged(validated_doc: dict, email_meta: dict):
     """
-    Send an alert email if the document has any flags.
-    Routes TO the supervisor who wrote the PO (BK=Blake, AN=Adam).
-    Donna is always CC'd.
-    Falls back to ALERT_EMAIL if supervisor can't be determined.
+    Send a Claude-written alert email if the document has any flags.
+    Routes TO the supervisor (BK=Blake, AN=Adam), CC Donna.
     """
     flags  = validated_doc.get("validation_flags", [])
     status = validated_doc.get("validation_status", "CLEAN")
@@ -151,32 +207,14 @@ def notify_if_flagged(validated_doc: dict, email_meta: dict):
     if not flags or status == "CLEAN":
         return
 
-    doc_type   = validated_doc.get("file_type", "Document")
     po_number  = validated_doc.get("po_number", "N/A")
     supervisor = (validated_doc.get("supervisor") or "").upper()
-    sender     = email_meta.get("sender", "Unknown")
-    subject_   = email_meta.get("subject", "")
-    filename   = Path(validated_doc.get("filepath", "")).name
 
-    # Determine recipient based on supervisor code
     to_address = SUPERVISOR_EMAILS.get(supervisor, ALERT_EMAIL)
     cc_address = DONNA_EMAIL
 
-    flag_lines = "\n".join(f"  • {f}" for f in flags)
+    # Generate contextual body via Claude
+    body = _generate_alert_body(validated_doc, email_meta, flags)
 
     subject = f"[PO Alert] {status} — {po_number}"
-    body = f"""A {doc_type} was received that requires your attention.
-
-PO Number  : {po_number}
-Supervisor : {supervisor if supervisor else 'Unknown'}
-File       : {filename}
-Received   : {email_meta.get('received_at', '')}
-From       : {sender}
-Subject    : {subject_}
-
-Issues detected:
-{flag_lines}
-
-Please review the file in the 'flagged' folder and correct before resubmitting.
-"""
     send_alert(subject, body, to=to_address, cc=cc_address)
