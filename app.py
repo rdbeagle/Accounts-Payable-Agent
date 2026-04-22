@@ -410,8 +410,13 @@ with st.sidebar:
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
-st.markdown('<div class="page-title">Purchase Order Dashboard</div>', unsafe_allow_html=True)
-st.markdown('<div class="page-sub">Integrity Wall Systems &nbsp;·&nbsp; Automated Order Processing</div>', unsafe_allow_html=True)
+st.markdown('<div class="page-title">Accounts Payable P.A.E.S.</div>', unsafe_allow_html=True)
+st.markdown('<div class="page-title">Processing & Automation Engine System</div>', unsafe_allow_html=True)
+
+st.markdown('<div class="page-sub">Company: Integrity Wall Solutions LLC &nbsp;·&nbsp</div>', unsafe_allow_html=True)
+st.markdown('<div class="page-sub">Team: Raya Warriors</div>', unsafe_allow_html=True)
+st.markdown('<div class="page-sub">Danielle Beagle - Sumedh Reddy Katta - Sivesh Patti</div>', unsafe_allow_html=True)
+
 st.markdown('<div class="red-bar"></div>', unsafe_allow_html=True)
 
 df = load_tracking()
