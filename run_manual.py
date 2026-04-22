@@ -28,6 +28,13 @@ from agents.filer           import file_po, file_invoice, notify_if_flagged
 
 SUPPORTED_EXTENSIONS = {".xls", ".xlsx", ".xlsm", ".pdf"}
 
+NON_PO_ERRORS = [
+    "not a po form",
+    "unknown po type",
+    "inventory",
+    "report",
+]
+
 
 def scan_manual_inbox() -> list[dict]:
     """
@@ -75,14 +82,9 @@ def process_file(file_info: dict, dry_run: bool = False) -> dict | None:
 
     if parsed.get("parse_error") and doc_type == "PO":
         print(f"  [Warning] Parse error: {parsed['parse_error']}")
-        non_po_errors = [
-            "not a po form",
-            "unknown po type",
-            "inventory",
-            "report",
-        ]
-        if any(kw in parsed["parse_error"].lower() for kw in non_po_errors):
-            print(f"  [Skip] Not a PO form — skipping: {filename}")
+        # Skip inventory reports, EOM sheets, and other non-PO files silently
+        if any(kw in parsed["parse_error"].lower() for kw in NON_PO_ERRORS):
+            print(f"  [Skip] Not a PO form — skipping tracking log: {filename}")
             return None
 
     # ── Validate ──────────────────────────────────────────────────────────────

@@ -15,13 +15,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-STORAGE_ROOT = os.getenv("STORAGE_ROOT", "./data")
+_SCRIPT_DIR  = Path(__file__).resolve().parent.parent
+STORAGE_ROOT = str(Path(os.getenv("STORAGE_ROOT", str(_SCRIPT_DIR / "data"))).resolve())
 TRACKING_CSV = os.path.join(STORAGE_ROOT, "po_tracking.csv")
 
 TRACKING_COLUMNS = [
     "po_number", "po_type", "supervisor", "vendor_on_form",
     "order_date", "delivery_date", "address", "release",
     "lot", "category", "track", "location",
+    "recipient_domains",
     "source_file", "received_at", "logged_at",
     "status", "flags", "invoice_amount", "po_items_json",
 ]
@@ -45,6 +47,22 @@ def _save_tracking(rows: list[dict]):
 
 def get_all_po_numbers() -> set[str]:
     return {r["po_number"].strip().upper() for r in _load_tracking() if r.get("po_number")}
+
+
+def _extract_recipient_domains(to_addresses: list[str]) -> str:
+    """
+    Extract unique domains from recipient addresses,
+    excluding logisticconsultants.com (internal sending address).
+    Returns a comma-separated string of domains.
+    """
+    EXCLUDE = {"logisticconsultants.com", "integrityllctuc.com", "txexterior.com"}
+    domains = set()
+    for addr in to_addresses:
+        if "@" in addr:
+            domain = addr.split("@")[-1].lower().strip()
+            if domain and domain not in EXCLUDE:
+                domains.add(domain)
+    return ", ".join(sorted(domains))
 
 
 def validate_po(parsed_po: dict) -> dict:
@@ -72,6 +90,7 @@ def validate_po(parsed_po: dict) -> dict:
     if not parsed_po.get("items"):
         flags.append("No line items found in PO form.")
 
+    # Build status from ALL flag types
     status_parts = []
     if any("DUPLICATE" in f for f in flags):
         status_parts.append("DUPLICATE")
@@ -79,6 +98,11 @@ def validate_po(parsed_po: dict) -> dict:
         status_parts.append("VENDOR_MISMATCH")
     if any("Parse error" in f for f in flags):
         status_parts.append("PARSE_ERROR")
+    if any("missing or blank" in f for f in flags):
+        status_parts.append("MISSING_PO_NUMBER")
+    if any("No line items" in f for f in flags):
+        status_parts.append("NO_LINE_ITEMS")
+
     status = " | ".join(status_parts) if status_parts else "CLEAN"
 
     parsed_po["validation_status"] = status
@@ -195,30 +219,32 @@ def validate_invoice(parsed_invoice: dict, tracking_rows: list[dict] | None = No
     return parsed_invoice
 
 
-def log_po_to_tracking(validated_po: dict, source_file: str, received_at: str) -> dict:
+def log_po_to_tracking(validated_po: dict, source_file: str, received_at: str,
+                        to_addresses: list[str] | None = None) -> dict:
     rows = _load_tracking()
     now  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     row = {
-        "po_number":      (validated_po.get("po_number") or "").upper(),
-        "po_type":        validated_po.get("po_type", ""),
-        "supervisor":     validated_po.get("supervisor", ""),
-        "vendor_on_form": validated_po.get("vendor_on_form", ""),
-        "order_date":     validated_po.get("order_date", ""),
-        "delivery_date":  validated_po.get("delivery_date", ""),
-        "address":        validated_po.get("address", ""),
-        "release":        validated_po.get("release", ""),
-        "lot":            validated_po.get("lot", ""),
-        "category":       validated_po.get("category", ""),
-        "track":          validated_po.get("track", ""),
-        "location":       validated_po.get("location", ""),
-        "source_file":    source_file,
-        "received_at":    received_at,
-        "logged_at":      now,
-        "status":         validated_po.get("validation_status", ""),
-        "flags":          json.dumps(validated_po.get("validation_flags", [])),
-        "invoice_amount": "",
-        "po_items_json":  json.dumps(validated_po.get("items", [])),
+        "po_number":         (validated_po.get("po_number") or "").upper(),
+        "po_type":           validated_po.get("po_type", ""),
+        "supervisor":        validated_po.get("supervisor", ""),
+        "vendor_on_form":    validated_po.get("vendor_on_form", ""),
+        "order_date":        validated_po.get("order_date", ""),
+        "delivery_date":     validated_po.get("delivery_date", ""),
+        "address":           validated_po.get("address", ""),
+        "release":           validated_po.get("release", ""),
+        "lot":               validated_po.get("lot", ""),
+        "category":          validated_po.get("category", ""),
+        "track":             validated_po.get("track", ""),
+        "location":          validated_po.get("location", ""),
+        "recipient_domains": _extract_recipient_domains(to_addresses or []),
+        "source_file":       source_file,
+        "received_at":       received_at,
+        "logged_at":         now,
+        "status":            validated_po.get("validation_status", ""),
+        "flags":             json.dumps(validated_po.get("validation_flags", [])),
+        "invoice_amount":    "",
+        "po_items_json":     json.dumps(validated_po.get("items", [])),
     }
 
     rows.append(row)

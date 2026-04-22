@@ -6,24 +6,69 @@
     "to_addresses": ["tucsonstucco@rwc.org", "orders@logisticconsultants.com"],
     "received_at": "2026-04-14T09:00:00",
     "vendor": "RWC",
-    "attachments": [{"filename": "4775BK LH LOT 94.19.xls"}]
+    "attachments": [{"filename": "4775BK_LH_LOT_94_19.xls"}]
   },
   {
     "uid": "demo_002",
-    "subject": "ST ORDER LOT 41 SBP - WILLCALL",
+    "subject": "LH ORDER LOT 94 - RESEND (DUPLICATE)",
     "sender": "blakek@integrityllctuc.com",
-    "to_addresses": ["adrian.carino@lwsupply.com", "orders@logisticconsultants.com"],
-    "received_at": "2026-04-14T09:15:00",
-    "vendor": "LW",
-    "attachments": [{"filename": "8805BK ST SBP LOT41.44B.xls"}]
+    "to_addresses": ["tucsonstucco@rwc.org", "orders@logisticconsultants.com"],
+    "received_at": "2026-04-14T09:30:00",
+    "vendor": "RWC",
+    "attachments": [{"filename": "4775BK_LH_LOT_94_21.xls"}]
   },
   {
     "uid": "demo_003",
-    "subject": "RE: LH ORDER LOT 94 - RESEND",
+    "subject": "LH ORDER LOT 95",
+    "sender": "blakek@integrityllctuc.com",
+    "to_addresses": ["tucsonstucco@rwc.org", "orders@logisticconsultants.com"],
+    "received_at": "2026-04-14T09:45:00",
+    "vendor": "RWC",
+    "attachments": [{"filename": "4776BK_LH_LOT_95_01.xls"}]
+  },
+  {
+    "uid": "demo_004",
+    "subject": "LH ORDER LOT 96",
     "sender": "blakek@integrityllctuc.com",
     "to_addresses": ["tucsonstucco@rwc.org", "orders@logisticconsultants.com"],
     "received_at": "2026-04-14T10:00:00",
     "vendor": "RWC",
-    "attachments": [{"filename": "4775BK LH LOT 94.19.xls"}]
+    "attachments": [{"filename": "4777BK_LH_LOT_96_03.xls"}]
+  },
+  {
+    "uid": "demo_005",
+    "subject": "LH ORDER LOT 97",
+    "sender": "blakek@integrityllctuc.com",
+    "to_addresses": ["tucsonstucco@rwc.org", "orders@logisticconsultants.com"],
+    "received_at": "2026-04-14T10:15:00",
+    "vendor": "RWC",
+    "attachments": [{"filename": "4778BK_LH_LOT_97_02.xls"}]
+  },
+  {
+    "uid": "demo_006",
+    "subject": "ST ORDER SBP LOT 41 - VENDOR MISMATCH",
+    "sender": "blakek@integrityllctuc.com",
+    "to_addresses": ["tucsonstucco@rwc.org", "orders@logisticconsultants.com"],
+    "received_at": "2026-04-14T10:30:00",
+    "vendor": "RWC",
+    "attachments": [{"filename": "8805BK_ST_SBP_LOT41_44B.xls"}]
+  },
+  {
+    "uid": "demo_007",
+    "subject": "ST ORDER SBP LOT 41 - RESEND",
+    "sender": "blakek@integrityllctuc.com",
+    "to_addresses": ["adrian.carino@lwsupply.com", "orders@logisticconsultants.com"],
+    "received_at": "2026-04-14T10:45:00",
+    "vendor": "LW",
+    "attachments": [{"filename": "8805BK_ST_SBP_LOT41_45B.xls"}]
+  },
+  {
+    "uid": "demo_008",
+    "subject": "ST ORDER LOT 42",
+    "sender": "blakek@integrityllctuc.com",
+    "to_addresses": ["adrian.carino@lwsupply.com", "orders@logisticconsultants.com"],
+    "received_at": "2026-04-14T11:00:00",
+    "vendor": "LW",
+    "attachments": [{"filename": "8806BK_ST_LOT42_10.xls"}]
   }
 ]

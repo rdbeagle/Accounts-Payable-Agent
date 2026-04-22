@@ -1,27 +1,43 @@
-"""
-app.py — Integrity Wall Systems PO Automation Dashboard
-Run with: streamlit run app.py
-"""
-
-import os
-import json
 import subprocess
-import pandas as pd
+import sys
+import os
+
+# ── Auto-install requirements ──────────────────────────────────────────────────
+req_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements.txt")
+subprocess.check_call(
+    [sys.executable, "-m", "pip", "install", "-r", req_path],
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+
+# ── Suppress warnings ──────────────────────────────────────────────────────────
+import warnings
+warnings.filterwarnings("ignore")
+
+# ── Streamlit MUST be first after imports ──────────────────────────────────────
 import streamlit as st
-from pathlib import Path
-from datetime import datetime, date
-from dotenv import load_dotenv
-
-load_dotenv()
-
-STORAGE_ROOT = os.getenv("STORAGE_ROOT", "./po-automation/data")
-TRACKING_CSV = os.path.join(STORAGE_ROOT, "po_tracking.csv")
 
 st.set_page_config(
     page_title="IWS — PO Automation",
     page_icon="🏗️",
     layout="wide",
 )
+
+"""
+app.py — Integrity Wall Systems PO Automation Dashboard
+Run with: streamlit run app.py
+"""
+
+import json
+import pandas as pd
+from pathlib import Path
+from datetime import datetime, date
+from dotenv import load_dotenv
+
+load_dotenv()
+
+STORAGE_ROOT = os.getenv("STORAGE_ROOT", "./data")
+TRACKING_CSV = os.path.join(STORAGE_ROOT, "po_tracking.csv")
 
 st.markdown("""
 <style>
@@ -63,7 +79,7 @@ html, body, [class*="css"] {
     font-size: 0.62rem;
     letter-spacing: 5px;
     text-transform: uppercase;
-    color: rgba(255,255,255,0.4);
+    color: rgba(255,255,255,0.35);
     margin-top: 2px;
     font-weight: 300;
 }
@@ -77,12 +93,14 @@ html, body, [class*="css"] {
     font-size: 0.6rem;
     letter-spacing: 4px;
     text-transform: uppercase;
-    color: rgba(255,255,255,0.6);
+    color: rgba(255,255,255,0.3);
     font-weight: 400;
     margin-bottom: 10px;
     padding-bottom: 6px;
     border-bottom: 1px solid rgba(255,255,255,0.06);
 }
+
+/* Page title */
 .page-title {
     font-family: 'Bebas Neue', sans-serif;
     font-size: 2.8rem;
@@ -95,32 +113,8 @@ html, body, [class*="css"] {
     font-size: 0.7rem;
     letter-spacing: 4px;
     text-transform: uppercase;
-    color: rgba(255,255,255,0.6);
+    color: rgba(255,255,255,0.3);
     margin-top: 4px;
-    font-weight: 300;
-}
-
-/* AI Brief card */
-.ai-brief-card {
-    background: rgba(180,30,30,0.08);
-    border: 1px solid rgba(180,30,30,0.25);
-    border-left: 3px solid #E63232;
-    border-radius: 10px;
-    padding: 18px 22px;
-    margin-bottom: 20px;
-}
-.ai-brief-label {
-    font-size: 0.58rem;
-    letter-spacing: 4px;
-    text-transform: uppercase;
-    color: rgba(230,50,50,0.7);
-    font-weight: 500;
-    margin-bottom: 8px;
-}
-.ai-brief-text {
-    font-size: 0.92rem;
-    color: rgba(255,255,255,0.85);
-    line-height: 1.6;
     font-weight: 300;
 }
 
@@ -135,7 +129,7 @@ html, body, [class*="css"] {
 }
 .kpi-wrap:hover { border-color: rgba(255,255,255,0.14); }
 .kpi-n { font-family: 'Bebas Neue', sans-serif; font-size: 3rem; line-height: 1; color: #fff; }
-.kpi-l { font-size: 0.6rem; letter-spacing: 2px; text-transform: uppercase; color: rgba(255,255,255,0.55); margin-top: 5px; }
+.kpi-l { font-size: 0.6rem; letter-spacing: 3px; text-transform: uppercase; color: rgba(255,255,255,0.35); margin-top: 5px; }
 .kpi-clean  .kpi-n { color: #4ade80; }
 .kpi-flag   .kpi-n { color: #f87171; }
 .kpi-dup    .kpi-n { color: #E63232; }
@@ -168,7 +162,7 @@ html, body, [class*="css"] {
 .badge-mis { background: rgba(251,146,60,0.2); color: #fdba74; }
 .badge-err { background: rgba(255,255,255,0.07); color: rgba(255,255,255,0.45); }
 .badge-cln { background: rgba(74,222,128,0.15); color: #4ade80; }
-.alert-meta { font-size: 0.73rem; color: rgba(255,255,255,0.4); margin-top: 6px; }
+.alert-meta { font-size: 0.73rem; color: rgba(255,255,255,0.35); margin-top: 6px; }
 .alert-flag-text { color: rgba(255,255,255,0.65); margin-top: 4px; }
 
 /* Buttons */
@@ -228,11 +222,13 @@ html, body, [class*="css"] {
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def excel_serial_to_date(val) -> str:
+    """Convert Excel date serial number to readable date string."""
     try:
         f = float(val)
-        if f > 1000:
+        if f > 1000:  # looks like a serial
+            d = date(1899, 12, 30)
             from datetime import timedelta
-            return (date(1899, 12, 30) + timedelta(days=int(f))).strftime("%m/%d/%Y")
+            return (d + timedelta(days=int(f))).strftime("%m/%d/%Y")
         return str(val)
     except Exception:
         return str(val) if val and str(val) != "nan" else "—"
@@ -247,64 +243,15 @@ def load_tracking() -> pd.DataFrame:
         df["flags"] = df["flags"].apply(
             lambda x: json.loads(x) if isinstance(x, str) and x.startswith("[") else []
         )
+    # Convert Excel date serials
     for col in ["order_date", "delivery_date"]:
         if col in df.columns:
             df[col] = df[col].apply(excel_serial_to_date)
     return df
 
 
-def generate_ai_brief(df: pd.DataFrame) -> str:
-    cache_key = f"ai_brief_{len(df)}"
-    if st.session_state.get("ai_brief_key") == cache_key:
-        return st.session_state.get("ai_brief", "")
-
-    try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-
-        total      = len(df)
-        clean      = int((df["status"] == "CLEAN").sum()) if "status" in df.columns else 0
-        dupes      = int(df["status"].str.contains("DUPLICATE", na=False).sum()) if "status" in df.columns else 0
-        mismatches = int(df["status"].str.contains("MISMATCH", na=False).sum()) if "status" in df.columns else 0
-        flagged    = total - clean
-
-        flagged_df   = df[df["status"].str.contains("DUPLICATE|MISMATCH", na=False)] if "status" in df.columns else pd.DataFrame()
-        flag_details = ""
-        for _, row in flagged_df.iterrows():
-            flags     = row.get("flags", [])
-            flag_text = "; ".join(flags) if isinstance(flags, list) else str(flags)
-            flag_details += f"- PO {row.get('po_number','?')} (Supervisor {row.get('supervisor','?')}): {flag_text}\n"
-
-        prompt = f"""You are writing a brief status update for a construction supply company's purchase order inbox.
-Write 3-4 sentences in plain English. Be specific — mention PO numbers and supervisors when there are issues.
-End with the single most important action needed right now. No bullet points, no headers.
-
-Status:
-- Total POs: {total} | Clean: {clean} | Flagged: {flagged}
-- Duplicates: {dupes} | Vendor mismatches: {mismatches}
-
-Issues:
-{flag_details if flag_details else "None — all POs processed cleanly."}"""
-
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=200,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        brief = response.content[0].text.strip()
-
-    except Exception as e:
-        total = len(df)
-        clean = int((df["status"] == "CLEAN").sum()) if "status" in df.columns else 0
-        brief = f"{total} purchase orders on file — {clean} processed cleanly. AI brief unavailable: check ANTHROPIC_API_KEY in .env."
-
-    st.session_state["ai_brief"]     = brief
-    st.session_state["ai_brief_key"] = cache_key
-    return brief
-
-
 def run_automation(dry_run: bool = False):
-    cmd = ["python", "run_automation.py"]
+    cmd = [sys.executable, "run_automation.py"]
     if dry_run:
         cmd.append("--dry-run")
     try:
@@ -319,11 +266,29 @@ def run_automation(dry_run: bool = False):
         return "", str(e)
 
 
-def run_demo_pipeline():
+
+def run_demo(dry_run: bool = False):
+    cmd = [sys.executable, "run_demo.py"]
+    if dry_run:
+        cmd.append("--dry-run")
     try:
         result = subprocess.run(
-            ["python", "run_demo.py"],
-            capture_output=True, text=True,
+            cmd, capture_output=True, text=True,
+            cwd=Path(__file__).parent, timeout=180
+        )
+        return result.stdout, result.stderr
+    except subprocess.TimeoutExpired:
+        return "", "Timed out after 3 minutes."
+    except Exception as e:
+        return "", str(e)
+
+def run_manual(dry_run: bool = False):
+    cmd = [sys.executable, "run_manual.py"]
+    if dry_run:
+        cmd.append("--dry-run")
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True,
             cwd=Path(__file__).parent, timeout=180
         )
         return result.stdout, result.stderr
@@ -334,6 +299,7 @@ def run_demo_pipeline():
 
 
 def inject_manual_files(uploaded_files) -> int:
+    """Save manually dropped files into the inbox for processing."""
     if not uploaded_files:
         return 0
     month    = datetime.now().strftime("%Y%m")
@@ -349,9 +315,12 @@ def inject_manual_files(uploaded_files) -> int:
 
 
 def badge(status: str) -> str:
-    if "DUPLICATE" in status: return '<span class="badge badge-dup">DUPLICATE</span>'
-    if "MISMATCH"  in status: return '<span class="badge badge-mis">MISMATCH</span>'
-    if "CLEAN"     in status: return '<span class="badge badge-cln">CLEAN</span>'
+    if "DUPLICATE" in status:
+        return f'<span class="badge badge-dup">DUPLICATE</span>'
+    if "MISMATCH" in status:
+        return f'<span class="badge badge-mis">MISMATCH</span>'
+    if "CLEAN" in status:
+        return f'<span class="badge badge-cln">CLEAN</span>'
     return f'<span class="badge badge-err">{status}</span>'
 
 
@@ -368,14 +337,12 @@ with st.sidebar:
     st.markdown('<div class="red-bar"></div>', unsafe_allow_html=True)
 
     st.markdown('<div class="section-head">Automation</div>', unsafe_allow_html=True)
-    run_live = st.button("▶  RUN NOW", width='stretch', type="primary")
-    run_dry  = st.button("◎  TEST RUN", width='stretch')
+    run_live = st.button("▶  RUN NOW", use_container_width=True, type="primary")
+    run_dry  = st.button("◎  DRY RUN", use_container_width=True)
 
     if run_live:
         with st.spinner("Checking inbox and processing…"):
             out, err = run_automation(dry_run=False)
-        st.session_state.pop("ai_brief", None)
-        st.session_state.pop("ai_brief_key", None)
         st.success("Run complete.")
         if out:
             with st.expander("Output log"):
@@ -385,9 +352,9 @@ with st.sidebar:
         st.rerun()
 
     if run_dry:
-        with st.spinner("Running test run…"):
+        with st.spinner("Running dry run…"):
             out, err = run_automation(dry_run=True)
-        st.info("Test run — no files moved.")
+        st.info("Dry run — no files moved.")
         if out:
             with st.expander("Output log"):
                 st.code(out, language="text")
@@ -396,17 +363,15 @@ with st.sidebar:
 
     st.markdown('<div class="red-bar"></div>', unsafe_allow_html=True)
     st.markdown('<div class="section-head">Demo Mode</div>', unsafe_allow_html=True)
-    st.markdown('<p style="font-size:0.8rem;color:rgba(255,255,255,0.6);margin-top:-4px;">Run pipeline against sample files — no Outlook needed.</p>', unsafe_allow_html=True)
-    run_demo = st.button("◈  RUN DEMO", width='stretch')
+    st.caption("Runs against sample files — no Outlook needed.")
+    run_demo_btn = st.button("\U0001f3ac  RUN DEMO", use_container_width=True)
 
-    if run_demo:
-        with st.spinner("Running demo pipeline…"):
-            out, err = run_demo_pipeline()
-        st.session_state.pop("ai_brief", None)
-        st.session_state.pop("ai_brief_key", None)
-        st.success("Demo run complete.")
+    if run_demo_btn:
+        with st.spinner("Running demo pipeline\u2026"):
+            out, err = run_demo(dry_run=True)
+        st.success("Demo complete.")
         if out:
-            with st.expander("Output log"):
+            with st.expander("Demo output log"):
                 st.code(out, language="text")
         if err:
             st.warning(err)
@@ -414,7 +379,7 @@ with st.sidebar:
 
     st.markdown('<div class="red-bar"></div>', unsafe_allow_html=True)
     st.markdown('<div class="section-head">Manual Submission</div>', unsafe_allow_html=True)
-    st.markdown('<p style="font-size:0.8rem;color:rgba(255,255,255,0.6);margin-top:-4px;">Use when inbox access is unavailable.</p>', unsafe_allow_html=True)
+    st.caption("Use when inbox access is unavailable.")
 
     uploaded = st.file_uploader(
         "Drop files",
@@ -423,14 +388,23 @@ with st.sidebar:
         label_visibility="collapsed",
     )
     if uploaded:
-        if st.button("⬆  SUBMIT FILES", width='stretch'):
+        if st.button("⬆  SUBMIT FILES", use_container_width=True):
             n = inject_manual_files(uploaded)
-            st.success(f"{n} file(s) queued. Click Run Now to process.")
+            st.success(f"{n} file(s) queued.")
+
+    if st.button("⚙  PROCESS MANUAL FILES", use_container_width=True):
+        with st.spinner("Processing uploaded files…"):
+            out, err = run_manual(dry_run=False)
+        st.success("Manual processing complete.")
+        if out:
+            with st.expander("Output log"):
+                st.code(out, language="text")
+        if err:
+            st.error(err)
+        st.rerun()
 
     st.markdown('<div class="red-bar"></div>', unsafe_allow_html=True)
-    if st.button("↺  REFRESH", width='stretch'):
-        st.session_state.pop("ai_brief", None)
-        st.session_state.pop("ai_brief_key", None)
+    if st.button("↺  REFRESH", use_container_width=True):
         st.rerun()
     st.caption(f"Updated {datetime.now().strftime('%H:%M:%S')}")
 
@@ -445,24 +419,14 @@ df = load_tracking()
 if df.empty:
     st.markdown("""
     <div style="text-align:center;padding:100px 0;">
-        <div style="font-family:'Bebas Neue',sans-serif;font-size:1.2rem;letter-spacing:5px;color:rgba(255,255,255,0.5);">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:1.2rem;letter-spacing:5px;color:rgba(255,255,255,0.2);">
             NO DATA YET
         </div>
-        <div style="font-size:0.7rem;letter-spacing:3px;color:rgba(255,255,255,0.3);margin-top:8px;">
+        <div style="font-size:0.7rem;letter-spacing:3px;color:rgba(255,255,255,0.12);margin-top:8px;">
             RUN AUTOMATION OR SUBMIT FILES TO BEGIN
         </div>
     </div>""", unsafe_allow_html=True)
     st.stop()
-
-# ── AI Brief ──────────────────────────────────────────────────────────────────
-with st.spinner("Generating AI brief…"):
-    brief = generate_ai_brief(df)
-
-st.markdown(f"""
-<div class="ai-brief-card">
-    <div class="ai-brief-label">&#9889; AI INBOX BRIEF</div>
-    <div class="ai-brief-text">{brief}</div>
-</div>""", unsafe_allow_html=True)
 
 # ── KPIs ──────────────────────────────────────────────────────────────────────
 total      = len(df)
@@ -473,11 +437,11 @@ mismatches = int(df["status"].str.contains("MISMATCH",  na=False).sum()) if "sta
 
 cols = st.columns(5)
 for col, val, lbl, cls in [
-    (cols[0], total,      "Total",    ""),
-    (cols[1], clean,      "Clean",    "kpi-clean"),
-    (cols[2], flagged,    "Flagged",  "kpi-flag"),
-    (cols[3], dupes,      "Dupes",    "kpi-dup"),
-    (cols[4], mismatches, "Mismatch", "kpi-mis"),
+    (cols[0], total,      "Total POs",         ""),
+    (cols[1], clean,      "Clean",             "kpi-clean"),
+    (cols[2], flagged,    "Flagged",           "kpi-flag"),
+    (cols[3], dupes,      "Duplicates",        "kpi-dup"),
+    (cols[4], mismatches, "Vendor Mismatches", "kpi-mis"),
 ]:
     col.markdown(f"""
     <div class="kpi-wrap {cls}">
@@ -488,7 +452,7 @@ for col, val, lbl, cls in [
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ── Flagged items ─────────────────────────────────────────────────────────────
-flagged_df = df[df["status"].str.contains("DUPLICATE|MISMATCH|VENDOR", na=False)] if "status" in df.columns else pd.DataFrame()
+flagged_df = df[df["status"].str.contains("DUPLICATE|MISMATCH|PARSE_ERROR|VENDOR", na=False)] if "status" in df.columns else pd.DataFrame()
 
 if not flagged_df.empty:
     with st.expander(f"⚠️  Flagged Items Requiring Attention  ({len(flagged_df)})", expanded=True):
@@ -558,18 +522,18 @@ if "po_number" in filtered.columns and len(filtered) > 0:
             d1, d2, d3 = st.columns(3)
             with d1:
                 st.markdown("**PO Info**")
-                for k, v in [("Number","po_number"),("Type","po_type"),("Supervisor","supervisor"),("Category","category")]:
-                    val = str(row.get(v,"")) if str(row.get(v,"")) != "nan" else "—"
+                for k, v in [("Number", "po_number"), ("Type", "po_type"), ("Supervisor", "supervisor"), ("Category", "category")]:
+                    val = str(row.get(v, "")) if str(row.get(v, "")) != "nan" else "—"
                     st.write(f"**{k}:** {val}")
             with d2:
                 st.markdown("**Dates & Location**")
-                for k, v in [("Order Date","order_date"),("Delivery","delivery_date"),("Address","address"),("Lot","lot"),("Location","location")]:
-                    val = str(row.get(v,"")) if str(row.get(v,"")) != "nan" else "—"
+                for k, v in [("Order Date", "order_date"), ("Delivery", "delivery_date"), ("Address", "address"), ("Lot", "lot"), ("Location", "location")]:
+                    val = str(row.get(v, "")) if str(row.get(v, "")) != "nan" else "—"
                     st.write(f"**{k}:** {val}")
             with d3:
                 st.markdown("**Vendor & Status**")
-                for k, v in [("Vendor on Form","vendor_on_form"),("Tract","tract"),("Release","release"),("Status","status")]:
-                    val = str(row.get(v,"")) if str(row.get(v,"")) != "nan" else "—"
+                for k, v in [("Vendor on Form", "vendor_on_form"), ("Tract", "tract"), ("Release", "release"), ("Status", "status")]:
+                    val = str(row.get(v, "")) if str(row.get(v, "")) != "nan" else "—"
                     st.write(f"**{k}:** {val}")
                 flags = row.get("flags", [])
                 if flags:

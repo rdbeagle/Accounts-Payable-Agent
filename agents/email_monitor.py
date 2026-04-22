@@ -25,7 +25,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 _SCRIPT_DIR = Path(__file__).resolve().parent.parent
-STORAGE_ROOT = os.getenv("STORAGE_ROOT", str(_SCRIPT_DIR / "data"))
+# Resolve to absolute path so Outlook COM can always save files correctly,
+# regardless of whether STORAGE_ROOT in .env is relative or absolute.
+STORAGE_ROOT = str(Path(os.getenv("STORAGE_ROOT", str(_SCRIPT_DIR / "data"))).resolve())
 SUPPORTED_EXTENSIONS = {".xls", ".xlsx", ".xlsm", ".pdf"}
 TARGET_INBOX = os.getenv("OUTLOOK_INBOX", None)
 

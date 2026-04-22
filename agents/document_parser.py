@@ -6,20 +6,28 @@ established by the existing VBA macros (CompilePurchaseOrdersFromFile).
 Cell reference map (confirmed from real form inspection):
   Both form types:
     A12  = form type ("lath" or "stucco")
-    B7   = tract/neighborhood (Arbor at Madera, Quail Creek, etc.) — NOT vendor
+
+  Lath (9 cols):
+    I6   = order date
+    I7   = delivery date
+    B7   = track
     B8   = release number
     D9   = lot number
-    G10  = vendor code (LW, L&W, DBM, RWC, etc.)  ← key fix
-  Lath:
-    I12  = PO number
-    I6   = order date, I7 = delivery date
     H10  = address
-    rows 14-46 = line items (col A=desc, col B=qty)
-  Stucco:
+    H11  = vendor label, I11 = vendor value  (row 10, cols 7/8)
+    I12  = PO number
+    rows 13-42 = line items (col A=desc, col B=qty)
+
+  Stucco (8 cols):
+    H6   = order date
+    H7   = delivery date
+    B7   = tract
+    B8   = release number
+    B9   = lot number
+    F10  = vendor label, G10 = vendor value  (row 9, cols 5/6)
     F12  = PO number
-    H6   = order date, H7 = delivery date
     G11  = address
-    rows 14-29 = line items
+    rows 13-25 = line items
 
 For PDFs (invoices), uses Claude AI to extract structured data.
 """
@@ -35,19 +43,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── Vendor domain map ─────────────────────────────────────────────────────────
-# Maps vendor codes written in G10 on the PO form to their email domains.
-# LW, L&W, and DBM all refer to L&W Supply Corporation.
-# Add new vendors here as you confirm their codes and domains.
 VENDOR_DOMAIN_MAP = {
     "rwc":   "rwcsupply.com",
     "l&w":   "lwsupply.com",
     "lw":    "lwsupply.com",
-    "dbm":   "lwsupply.com",   # DBM is an alias for L&W Supply
+    "dbm":   "lwsupply.com",
     "boral": "boral.com",
     "cemex": "cemex.com",
 }
 
-# Reverse map: email domain → canonical vendor name for display
 DOMAIN_TO_VENDOR = {
     "rwcsupply.com":  "RWC",
     "rwc.org":        "RWC",
@@ -58,52 +62,67 @@ DOMAIN_TO_VENDOR = {
 
 
 def _clean_lot(raw: str) -> str:
-    """Mirrors the VBA CleanLot function."""
     temp = re.sub(r"(?i)lot|#", "", raw)
-    return re.sub(r"[^A-Za-z0-9]", "", temp).strip()
+    return re.sub(r"[^A-Za-z0-9/]", "", temp).strip()
 
 
 def _detect_supervisor(po_number: str) -> str:
-    """Last 2 chars of PO# = supervisor code (BK or AN)."""
     if len(po_number) >= 2:
         suffix = po_number[-2:].upper()
         return suffix if suffix in ("BK", "AN") else "?"
     return "?"
 
 
-def _vendor_from_form(ws) -> str:
+def _vendor_from_form(ws, po_type: str) -> str:
     """
-    Find the vendor value by searching for the label cell containing
-    the word 'vendor' and reading the cell immediately to its right.
-    This handles both Lath and Stucco form layouts which differ by row.
+    Read vendor directly from confirmed cell locations:
+      Lath:   label at (10,7)='Vendor', value at (10,8)
+      Stucco: label at (9,5)='VENDOR', value at (9,6)
 
-    Stucco: F10='VENDOR', G10=value
-    Lath:   F11='Vendor', G11=value
-    Searches rows 8-14, columns 0-8 to find the label.
+    Falls back to scanning nearby cells if exact location is empty.
     """
     try:
-        for r in range(8, 14):
-            for c in range(0, 9):
-                cell = str(ws.cell_value(r, c)).strip().lower()
-                if cell == "vendor":
-                    # Return the cell immediately to the right
-                    value = str(ws.cell_value(r, c + 1)).strip()
-                    if value:
-                        return value
+        if po_type == "Lath":
+            # Primary: (10,8)
+            val = str(ws.cell_value(10, 8)).strip()
+            if val and val not in ("", "nan", "0.0"):
+                return val
+            # Fallback: scan row 10 cols 6-8
+            for c in range(6, 9):
+                v = str(ws.cell_value(10, c)).strip()
+                if v and v.lower() not in ("vendor", "", "nan", "0.0"):
+                    return v
+        elif po_type == "Stucco":
+            # Primary: (9,6)
+            val = str(ws.cell_value(9, 6)).strip()
+            if val and val not in ("", "nan", "0.0"):
+                return val
+            # Fallback: scan row 9 cols 4-7
+            for c in range(4, 8):
+                v = str(ws.cell_value(9, c)).strip()
+                if v and v.lower() not in ("vendor", "", "nan", "0.0"):
+                    return v
     except Exception:
         pass
+
+    # Last resort: scan rows 8-13 for a cell labeled 'vendor'
+    try:
+        for r in range(8, 14):
+            for c in range(0, ws.ncols - 1):
+                cell = str(ws.cell_value(r, c)).strip().lower()
+                if cell == "vendor":
+                    val = str(ws.cell_value(r, c + 1)).strip()
+                    if val and val not in ("", "nan", "0.0"):
+                        return val
+    except Exception:
+        pass
+
     return ""
 
 
 def _vendor_from_email(to_addresses: list[str]) -> str | None:
-    """
-    Determine vendor implied by who the email was sent to.
-    Checks To: addresses against known vendor domains.
-    Returns canonical vendor name or None.
-    """
     for addr in to_addresses:
         domain = addr.split("@")[-1].lower() if "@" in addr else ""
-        # Check direct domain match
         for vdomain, vname in DOMAIN_TO_VENDOR.items():
             if vdomain in domain or domain in vdomain:
                 return vname
@@ -111,10 +130,6 @@ def _vendor_from_email(to_addresses: list[str]) -> str | None:
 
 
 def parse_xls_po(filepath: str, to_addresses: list[str]) -> dict:
-    """
-    Parse a Lath or Stucco PO from an XLS file.
-    Returns a structured dict matching the compiler's output schema.
-    """
     result = {
         "filepath":          filepath,
         "file_type":         "PO",
@@ -127,11 +142,11 @@ def parse_xls_po(filepath: str, to_addresses: list[str]) -> dict:
         "address":           None,
         "release":           None,
         "lot":               None,
-        "tract":             None,   # B7 — neighborhood/phase name
+        "tract":             None,
         "category":          None,
         "location":          None,
-        "vendor_on_form":    None,   # G10 — actual vendor code
-        "vendor_from_email": None,   # inferred from To: domain
+        "vendor_on_form":    None,
+        "vendor_from_email": None,
         "vendor_mismatch":   False,
         "items":             [],
     }
@@ -145,6 +160,7 @@ def parse_xls_po(filepath: str, to_addresses: list[str]) -> dict:
             else:
                 result["parse_error"] = str(e)
             return result
+
         try:
             ws = wb.sheet_by_name("Form")
         except xlrd.biffh.XLRDError:
@@ -155,19 +171,19 @@ def parse_xls_po(filepath: str, to_addresses: list[str]) -> dict:
         if "lath" in a12:
             po_type       = "Lath"
             po_number     = str(ws.cell_value(11, 8)).strip().upper()  # I12
-            order_date    = str(ws.cell_value(5, 8)).strip()           # I6
-            delivery_date = str(ws.cell_value(6, 8)).strip()           # I7
-            address       = str(ws.cell_value(9, 7)).strip()           # H10
+            order_date    = str(ws.cell_value(5,  8)).strip()           # I6
+            delivery_date = str(ws.cell_value(6,  8)).strip()           # I7
+            address       = str(ws.cell_value(9,  7)).strip()           # H10
             category      = "MT10"
-            item_start, item_end = 13, 46
+            item_start, item_end = 13, 43
         elif "stucco" in a12:
             po_type       = "Stucco"
             po_number     = str(ws.cell_value(11, 5)).strip().upper()  # F12
-            order_date    = str(ws.cell_value(5, 7)).strip()           # H6
-            delivery_date = str(ws.cell_value(6, 7)).strip()           # H7
-            address       = str(ws.cell_value(10, 6)).strip()          # G11
+            order_date    = str(ws.cell_value(5,  7)).strip()           # H6
+            delivery_date = str(ws.cell_value(6,  7)).strip()           # H7
+            address       = str(ws.cell_value(10, 6)).strip()           # G11
             category      = "MT40"
-            item_start, item_end = 13, 29
+            item_start, item_end = 13, 26
         else:
             result["parse_error"] = f"Unknown PO type in A12: '{a12}'"
             return result
@@ -185,10 +201,10 @@ def parse_xls_po(filepath: str, to_addresses: list[str]) -> dict:
         # ── Release ──────────────────────────────────────────────────────────
         release = str(ws.cell_value(7, 1)).strip()   # B8
 
-        # ── Tract (neighborhood/phase name) ──────────────────────────────────
+        # ── Tract ────────────────────────────────────────────────────────────
         tract = str(ws.cell_value(6, 1)).strip()     # B7
 
-        # ── Location (job vs yard) ────────────────────────────────────────────
+        # ── Location ─────────────────────────────────────────────────────────
         location = "JOBTUC"
         try:
             end_row = 10 if po_type == "Lath" else 12
@@ -210,30 +226,24 @@ def parse_xls_po(filepath: str, to_addresses: list[str]) -> dict:
             if desc and qty > 0:
                 items.append({"description": desc, "quantity": qty})
 
-        # ── Vendor from G10 ───────────────────────────────────────────────────
-        vendor_on_form = _vendor_from_form(ws)
+        # ── Vendor from form (now uses confirmed cell locations) ──────────────
+        vendor_on_form = _vendor_from_form(ws, po_type)
 
         # ── Vendor implied by email To: addresses ─────────────────────────────
         email_vendor = _vendor_from_email(to_addresses)
 
         # ── Mismatch detection ────────────────────────────────────────────────
-        # Compare G10 vendor code against who the email was actually sent to.
         vendor_mismatch = False
         if vendor_on_form and email_vendor:
-            # Normalise form vendor: strip spaces, lowercase
             form_norm = vendor_on_form.lower().replace(" ", "").replace("&", "")
-            # Map form code → canonical name using VENDOR_DOMAIN_MAP
             form_canonical = None
             for code, domain in VENDOR_DOMAIN_MAP.items():
                 if code in form_norm or form_norm in code:
-                    # Find canonical name from domain
                     form_canonical = DOMAIN_TO_VENDOR.get(domain, code.upper())
                     break
-
             if form_canonical and form_canonical != email_vendor:
                 vendor_mismatch = True
             elif not form_canonical:
-                # Unknown vendor code on form — flag for review
                 vendor_mismatch = True
 
         result.update({
@@ -261,10 +271,6 @@ def parse_xls_po(filepath: str, to_addresses: list[str]) -> dict:
 
 
 def parse_pdf_invoice(filepath: str, email_metadata: dict) -> dict:
-    """
-    Use Claude to extract structured invoice data from a PDF.
-    Returns a dict with invoice_number, vendor, po_number, amount, line_items.
-    """
     result = {
         "filepath":       filepath,
         "file_type":      "Invoice",
@@ -279,9 +285,7 @@ def parse_pdf_invoice(filepath: str, email_metadata: dict) -> dict:
     try:
         import pdfplumber
         with pdfplumber.open(filepath) as pdf:
-            text = "\n".join(
-                page.extract_text() or "" for page in pdf.pages
-            )
+            text = "\n".join(page.extract_text() or "" for page in pdf.pages)
     except Exception as e:
         result["parse_error"] = f"PDF read failed: {e}"
         return result
